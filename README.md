@@ -46,40 +46,55 @@ Showcasing data-driven process optimization, JS/Low-code workflow automation, an
 <summary><b>🔍 SQL Example: Multi-DB Join & Business Logic Categorization</b></summary>
 
 ```sql
--- Joining Case Logs, Email Repositories, and Property Metadata
--- Applying Business Logic for Urgency Level and Contact Type
-WITH ProcessedInquiries AS (
-    SELECT 
-        c.case_id,
-        c.contact_party,
-        c.case_reason,
-        e.email_id,
-        p.property_name,
-        p.city_id,
-        c.created_at,
-        -- Business Logic: Contact Type Classification
-        CASE 
-            WHEN c.previous_case_id IS NULL THEN 'First Contact'
-            ELSE 'Subsequent Contact'
-        END AS contact_type,
-        -- Business Logic: Urgency Level Classification
-        CASE 
-            WHEN c.check_in_date - c.created_at <= INTERVAL '48 hours' AND c.check_in_date >= c.created_at THEN 'High Urgency (Pre-Checkin 48h)'
-            WHEN c.check_in_date - c.created_at <= INTERVAL '7 days' AND c.check_in_date >= c.created_at THEN 'Medium Urgency (Pre-Checkin 7d)'
-            WHEN c.created_at > c.check_out_date THEN 'Post Check-out'
-            ELSE 'Standard'
-        END AS urgency_level
-    FROM case_management_db c
-    JOIN email_repository_db e ON c.email_id = e.email_id
-    LEFT JOIN property_metadata_db p ON c.property_id = p.property_id
-    WHERE c.created_at >= NOW() - INTERVAL '30 days'
-)
-SELECT 
-    contact_party,
-    case_reason,
-    contact_type,
-    urgency_level,
-    COUNT(case_id) AS total_cases
-FROM ProcessedInquiries
-GROUP BY 1, 2, 3, 4
-ORDER BY total_cases DESC;
+
+case_tracker_enriched AS (
+    -- Enrich raw tracker rows with:
+    -- 1) year / quarter
+    -- 2) subcase ranking within a case
+    -- 3) ranking of cases within reservation + issue type
+    -- 4) previous inbound status in the same flow
+    -- 5) attachment presence flag
+    SELECT
+        ct.*,
+
+        /* Time-derived helper fields */
+        YEAR(tracker_created_at) AS yr,
+        QUARTER(tracker_created_at) AS qtr,
+
+        /* Rank subcases within the same case */
+        DENSE_RANK() OVER (
+            PARTITION BY case_id
+            ORDER BY subcase_id
+        ) AS subcase_rn,
+
+        /* Rank cases within the same reservation + issue type */
+        DENSE_RANK() OVER (
+            PARTITION BY reservation_id, issue_type
+            ORDER BY case_created_at
+        ) AS rn_issue_case_reservation,
+
+        /*
+        Get the previous status within the same reservation / issue / original-record / tracker-type flow.
+        This helps classify whether the current row is a follow-up, response, or subsequent contact.
+        */
+        LAG(case_status_flow, 1) OVER (
+            PARTITION BY reservation_id, issue_type, is_original_record,
+            CASE WHEN tracker_event_id > 0 THEN 1 ELSE 0 END
+            ORDER BY case_id, tracker_sequence_in_case
+        ) AS prev_subcase_status_inbound,
+
+        /* Mark whether an attachment exists for the interaction */
+        CASE
+            WHEN interaction_id_ref IS NOT NULL THEN 1
+            ELSE 0
+        END AS has_attachment
+
+    FROM support.fact_case_tracker ct
+    LEFT JOIN attachment
+        ON ct.conversation_id = UPPER(attachment.interaction_id_ref)
+    WHERE product_type = 'Lodging'
+      AND is_record_discarded = 0
+      AND datamonth >= 202606
+      AND tracker_created_at < CURRENT_DATE
+),
+
