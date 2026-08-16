@@ -1,16 +1,3 @@
-/*
-Generalized SQL Practice Query
-------------------------------
-Purpose:
-Build a subcase-level analytical dataset from case-tracking records,
-then extract resolved email cases for a target issue type and attach message text.
-
-Notes:
-- All schema names, table names, column names, and labels are generalized.
-- The logic is preserved, but business-specific identifiers were anonymized.
-- This query is intended for SQL learning and portfolio documentation.
-*/
-
 WITH dte AS (
     -- Define the target analysis date range
     SELECT calendar_date
